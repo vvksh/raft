@@ -20,4 +20,3 @@ This project is divided into three milestones
 - **Milestone 3** Implement state persistence in raft so that it can survive reboot and resume service where it left off.
 
 
-
