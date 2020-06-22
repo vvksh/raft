@@ -25,3 +25,10 @@ func getNewElectionTimerDuration() time.Duration {
 func getCurrentTimeString() string {
 	return time.Now().Format("2006-01-02 15:04:05.000")
 }
+
+func elected(numVotes int, total int) bool {
+	if numVotes > total/2 {
+		return true
+	}
+	return false
+}

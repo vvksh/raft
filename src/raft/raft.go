@@ -59,6 +59,7 @@ type Raft struct {
 	term     int         //current Term
 	votedFor interface{} //identifier of whoever got vote last time , use clientEnd name which is a random string
 	isLeader bool
+	numVotes int // number of votes gotten by a candidate
 
 	logs         []LogEntry // log entries this server contains
 	lastLogIndex int        // index of last log in this server
@@ -218,9 +219,44 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 // that the caller passes the address of the reply struct with &, not
 // the struct itself.
 //
-func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
-	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
-	return ok
+// New logic added: check the reply and declare leader if possible
+func (rf *Raft) sendRequestVote(server int, electionTerm int) {
+	args := RequestVoteArgs{}
+	args.CandidateId = rf.me
+	args.Term = rf.term
+	args.LastLogTerm = rf.getLastLogterm()
+	args.LastLogIndex = rf.lastLogIndex
+
+	reply := RequestVoteReply{}
+	rf.logf("Sending rfc for sendRequestVote to %d", server)
+	ok := rf.peers[server].Call("Raft.RequestVote", &args, &reply)
+	if ok {
+		if !reply.VoteGranted {
+			if reply.Term > rf.term {
+				rf.mu.Lock()
+				rf.term = reply.Term
+				rf.mu.Unlock()
+			}
+		} else {
+			// handle vote granted
+			// if still the same term and still not the leader, note the RPC call could return after a long while
+			// if network is slow or server is down, in that case, declare the candidate leader as soon as possible
+			rf.mu.Lock()
+			if rf.term == electionTerm && !rf.isLeader {
+				rf.numVotes++
+				if elected(rf.numVotes, len(rf.peers)) {
+					rf.logf("Elected leader")
+					rf.isLeader = true
+					go func() { rf.stopElectionTimerCh <- true }()
+					go rf.sendHeartBeats()
+				}
+
+			}
+			rf.mu.Unlock()
+		}
+	} else {
+		rf.logf("unsuccessful rfc for sendRequestVote to %d for election term %d", server, electionTerm)
+	}
 }
 
 // AppendEntriesArgs struct is used by leader to send AppendEntriesRpc calls
@@ -409,66 +445,24 @@ func (rf *Raft) sendHeartBeats() {
 // 	 follower
 // - If election timeout elapses: start new election
 func (rf *Raft) startLeaderElection() {
-	// rf.mu.Lock()
-	// defer rf.mu.Unlock()
 	rf.logf("started new election. number of peers %d", len(rf.peers))
-	// numVotesMu := &sync.Mutex{} // mutex for setting number of votes
+	rf.mu.Lock()
 	rf.term++
-	go func() { rf.resetElectionTimerCh <- "START_LEADER_ELECTION" }()
-	numvotes := 1
 	rf.votedFor = rf.me
+	rf.numVotes = 1 //reset to 1 for new term election
+	rf.mu.Unlock()
+	go func() { rf.resetElectionTimerCh <- "START_LEADER_ELECTION" }()
 
 	// rf.resetElectionTimerCh <- true
-	for serverIndex, _ := range rf.peers {
+	for server, _ := range rf.peers {
 
-		rf.logf("Requesting vote loop, current server %d", serverIndex)
-		if serverIndex == rf.me {
+		rf.logf("Requesting vote loop, current server %d", server)
+		if server == rf.me {
 			// skip self, already voted for self
 			continue
 		}
-		// go func() {
-		args := RequestVoteArgs{}
-		args.CandidateId = rf.me
-		args.Term = rf.term
-		args.LastLogTerm = rf.getLastLogterm()
-		args.LastLogIndex = rf.lastLogIndex
-
-		reply := RequestVoteReply{}
-		rf.logf("Sending rfc for sendRequestVote to %d", serverIndex)
-
-		if rf.sendRequestVote(serverIndex, &args, &reply) {
-
-			if !reply.VoteGranted {
-				if reply.Term > rf.term {
-					rf.mu.Lock()
-					rf.term = reply.Term
-					rf.mu.Unlock()
-				}
-			} else {
-				// numVotesMu.Lock()
-				numvotes++
-				// numVotesMu.Unlock()
-			}
-		} else {
-			rf.logf("unsuccessful rfc for sendRequestVote to %d", serverIndex)
-		}
-		// }()
+		go rf.sendRequestVote(server, rf.term)
 	}
-
-	if elected(numvotes, len(rf.peers)) {
-		rf.logf("Elected leader")
-		rf.isLeader = true
-		go func() { rf.stopElectionTimerCh <- true }()
-		go rf.sendHeartBeats()
-	}
-
-}
-
-func elected(numVotes int, total int) bool {
-	if numVotes > total/2 {
-		return true
-	}
-	return false
 }
 
 func (rf *Raft) getLastLogterm() int {
