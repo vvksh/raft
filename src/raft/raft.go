@@ -187,7 +187,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.logf("Granting vote to %d", args.CandidateId)
 	reply.VoteGranted = true
 
-	rf.resetElectionTimerCh <- "VOTED_FOR_CANDIDATE" //5.2, a server remains in follower state as long as it receives valid RPCs from a leader or candidate
+	go func() { rf.resetElectionTimerCh <- "VOTED_FOR_CANDIDATE" }() //5.2, a server remains in follower state as long as it receives valid RPCs from a leader or candidate
 }
 
 //
@@ -249,6 +249,7 @@ func (rf *Raft) sendRequestVote(server int, electionTerm int) {
 					rf.isLeader = true
 					go func() { rf.stopElectionTimerCh <- true }()
 					go rf.sendHeartBeats()
+
 				}
 
 			}
@@ -284,20 +285,26 @@ type AppendEntriesReply struct {
 // 5. If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	candidateTerm := args.Term
-	// rf.logf("heartbeat from leader; leader's term: %d", candidateTerm)
+	rf.logf("heartbeat from leader; leader's term: %d", candidateTerm)
 	currentTerm := rf.term
 	// rf.logf("my term %d ", currentTerm)
 
 	if candidateTerm < currentTerm {
+		rf.logf("getting heartbeat for a older term %d, my term %d ", candidateTerm, currentTerm)
 		reply.Success = false
 		return
 	}
 
+	reply.Success = true
+
 	// under partition if discovered a new leader, convert to a follower
 	if candidateTerm > currentTerm {
+		rf.logf("Getting heartbeat from a leader with newer term, setting isLeader to false")
 		rf.mu.Lock()
 		rf.isLeader = false
+		rf.term = candidateTerm
 		rf.mu.Unlock()
+		rf.logf("Updated isLeader and term")
 	}
 
 	// assume heartbeat for now and reset election timer
@@ -362,6 +369,7 @@ func (rf *Raft) leaderElectionThread() {
 	rf.logf("start election thread")
 	for {
 		if rf.killed() {
+			rf.logf("raft node killed, exiting leader election thread")
 			break
 		}
 		select {
@@ -373,9 +381,13 @@ func (rf *Raft) leaderElectionThread() {
 			// if timer already fired but channel not drained drain it
 			// See documentation for timer.Reset; documentation says to stop and drain before resetting; if channel already drained (drained in the case of election), it seems to get stuck there
 
-			if !rf.electionTimer.Stop() { // stop returns false if timer was already stopped or expired; normal case when a candidate starts election
-				rf.logf("case: reseting; Seems like election timer expired or stopped already, draining channel just in case")
-				// <-rf.electionTimer.C  // seems like its stuck when candidate resets because this channel is already drained //TODO check and remove
+			rf.logf("got something on reset election timer due to %s", resetReason)
+			stopped := rf.electionTimer.Stop()
+
+			if stopped {
+				rf.logf("case: reset; stopped an active timer") // should be case when getting heartbeat from leader
+			} else {
+				rf.logf("case: reset; seems like timer was already stopped") //in case the timer was reset after starting election
 			}
 			newDuration := getNewElectionTimerDuration()
 			rf.electionTimer.Reset(newDuration)
@@ -399,7 +411,10 @@ func (rf *Raft) leaderElectionThread() {
 				rf.logf("case: stopped; seems like timer was already stopped")
 			}
 		}
+		// rf.logf("in election thread")
+
 	}
+	rf.logf("exiting election thread")
 
 }
 
