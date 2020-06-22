@@ -427,7 +427,7 @@ func (rf *Raft) sendHeartBeats() {
 			heartbeatArgs.Term = rf.term
 			rf.logf("Sending heartbeat to Node: %d; args: %#v", serverIndex, heartbeatArgs)
 			reply := AppendEntriesReply{}
-			rf.sendAppendEntries(serverIndex, &heartbeatArgs, &reply)
+			go rf.sendAppendEntries(serverIndex, &heartbeatArgs, &reply)
 		}
 
 		time.Sleep(HEART_BEAT_INTERVAL_MILLIS * time.Millisecond)
