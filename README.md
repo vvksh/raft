@@ -1,6 +1,6 @@
 # Raft consensus protocol
 
-**Status: WIP**
+
 -------------
 
 This repo contains Go implementation of Raft consensus protocol. I am using instructions from lab 2 of [MIT's distributed systems course 6.824](https://pdos.csail.mit.edu/6.824/index.html) (from Spring 2020).
